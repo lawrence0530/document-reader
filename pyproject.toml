@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "document-reader"
+version = "0.1.0"
+description = "TRAE Agent Skill: read PDF, Office, images, text, HTML, epub, zip, audio to Markdown + plain text + structured tables. PDF first-choice: mineru-open-sdk (online, free, built-in OCR / table / formula switches), fallback to markitdown[all] + pypdf. OCR paths: mineru-cloud OR markitdown-ocr LLM Vision plugin (opt-in, no pytesseract / system Tesseract)."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "TRAE document-reader skill contributors" }]
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: General",
+]
+dependencies = [
+    "mineru-open-sdk",
+    "markitdown[all]",
+    "pypdf",
+    "pandas",
+    "Pillow",
+    "chardet",
+]
+
+[project.optional-dependencies]
+magic = ["python-magic"]
+ocr = ["markitdown-ocr", "openai"]
+dev = ["pytest>=8", "pytest-cov"]
+all = ["document-reader[magic,ocr,dev]"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]

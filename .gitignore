@@ -1,0 +1,32 @@
+# -------- venv / bootstrap outputs (uv binary / locally installed deps) --------
+.venv/
+.local/
+__pypackages__/
+
+# -------- test / Python bytecode caches --------
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg-info/
+.eggs/
+build/
+dist/
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# -------- uv's own caches (should not pollute the project repo) --------
+uvx_cache/
+
+# -------- IDEs (optional, TRAE ships built-in ones, but users may have these) --------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
