@@ -10,10 +10,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from src.document_reader import DocumentReader  # noqa: E402
-from src.models.document import ParsedDocument  # noqa: E402
-from src.parsers.base_parser import DocumentParseError  # noqa: E402
-from src.utils.dependency_checker import (  # noqa: E402
+from document_reader import DocumentReader  # noqa: E402
+from document_reader.models.document import ParsedDocument  # noqa: E402
+from document_reader.parsers.base_parser import DocumentParseError  # noqa: E402
+from document_reader.utils.dependency_checker import (  # noqa: E402
     get_available_capability,
     is_markitdown_available,
     is_mineru_sdk_available,
@@ -21,7 +21,7 @@ from src.utils.dependency_checker import (  # noqa: E402
     mineru_token_present,
     python_version_ok,
 )
-from src.utils.file_type_detector import (  # noqa: E402
+from document_reader.utils.file_type_detector import (  # noqa: E402
     detect_file_type,
 )
 
@@ -129,17 +129,20 @@ class TestDependencyChecker:
         assert isinstance(is_network_available(timeout=0.001), bool)
 
     def test_capability_dict(self):
-        cap = get_available_capability()
+        cap = DocumentReader().capability()
         for k in [
-            "python_310_plus",
+            "python_ok",
             "mineru_sdk",
-            "mineru_token_present",
+            "mineru_has_token",
             "markitdown",
-            "markitdown_ocr_plugin",
+            "markitdown_ocr_enabled",
+            "markitdown_ocr_plugin_installed",
             "network",
         ]:
-            assert k in cap
-            assert isinstance(cap[k], bool)
+            assert k in cap, f"missing key: {k}"
+            assert isinstance(cap[k], bool), f"key {k} not bool"
+        assert "max_file_size_mb" in cap
+        assert isinstance(cap["max_file_size_mb"], int)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +152,7 @@ class TestTextParserBasics:
     def test_txt_basic(self, tmp_path):
         f = tmp_path / "a.txt"
         f.write_text("Hello world\n这是中文\nline 3", encoding="utf-8")
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         doc = reader.read(f)
         assert doc.file_type == "txt"
         assert "Hello world" in doc.text
@@ -159,7 +162,7 @@ class TestTextParserBasics:
     def test_md_writes_markdown_field(self, tmp_path):
         f = tmp_path / "note.md"
         f.write_text("# Title\n\npara **bold**\n\n- item1\n- item2")
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         doc = reader.read(f)
         assert doc.markdown.startswith("# Title")
         assert "Title" in doc.text
@@ -178,7 +181,7 @@ class TestTextParserBasics:
         with open(f, "w", encoding="utf-8-sig", newline="") as fh:
             w = csv.writer(fh)
             w.writerows(rows)
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         doc = reader.read(f)
         assert doc.file_type == "csv"
         assert len(doc.tables) >= 1
@@ -188,8 +191,8 @@ class TestTextParserBasics:
 
     def test_json_pretty(self, tmp_path):
         f = tmp_path / "obj.json"
-        f.write_text('{"a":1,"b":{"c":[1,2,3]},"name":"中文"}')
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        f.write_text('{"a":1,"b":{"c":[1,2,3]},"name":"中文"}', encoding="utf-8")
+        reader = DocumentReader()
         doc = reader.read(f)
         # Pretty JSON should use 2-space indentation, newlines
         assert "\n" in doc.text
@@ -199,7 +202,7 @@ class TestTextParserBasics:
     def test_gbk_encoding(self, tmp_path):
         f = tmp_path / "gbk.txt"
         f.write_bytes("中文GBK内容\n第二行".encode("gbk"))
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         doc = reader.read(f)
         # chardet should detect gbk on a large-enough sample; at least it must not crash
         assert isinstance(doc.text, str)
@@ -211,7 +214,7 @@ class TestTextParserBasics:
 # ---------------------------------------------------------------------------
 class TestDocumentReaderErrors:
     def test_file_not_found(self, tmp_path):
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         with pytest.raises(DocumentParseError) as exc:
             reader.read(tmp_path / "notexist.pdf")
         assert "File not found" in str(exc.value)
@@ -219,16 +222,16 @@ class TestDocumentReaderErrors:
     def test_file_type_hint_unknown_works_as_override(self, tmp_path):
         f = tmp_path / "weird.xyz"
         f.write_text("looks like plain text fallback")
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         doc = reader.read(f, file_type_hint="md")
         assert doc.file_type == "md"
         assert "plain text fallback" in doc.text
 
     def test_python_version_strict_raise(self, monkeypatch, tmp_path):
         # Temporarily flip version_ok to False
-        import src.document_reader as dr_mod
+        import document_reader.document_reader as dr_mod
 
-        monkeypatch.setattr(dr_mod, "python_version_ok", lambda: False)
+        monkeypatch.setattr(dr_mod, "python_version_ok", lambda *a, **kw: False)
         with pytest.raises(RuntimeError):
             DocumentReader(python_version_strict=True)
 
@@ -236,7 +239,7 @@ class TestDocumentReaderErrors:
         # Build a 6MB file; then pass a 5MB reader cap to trigger size check
         f = tmp_path / "big.txt"
         f.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
-        reader = DocumentReader(prefer_mineru_sdk=False, max_file_size_mb=5)
+        reader = DocumentReader(max_file_size_mb=5)
         with pytest.raises(DocumentParseError) as exc:
             reader.read(f)
         assert "too large" in str(exc.value).lower()
@@ -248,7 +251,7 @@ class TestDocumentReaderErrors:
 class TestFacadeDispatcher:
     @staticmethod
     def _make_reader_with_mocks(monkeypatch, pdf_result, office_result, image_result, text_result):
-        import src.document_reader as dr_mod
+        import document_reader.document_reader as dr_mod
 
         class FakePdf:
             def parse(self, path, **kw):
@@ -270,7 +273,7 @@ class TestFacadeDispatcher:
         monkeypatch.setattr(dr_mod, "is_markitdown_available", lambda: False)
         monkeypatch.setattr(dr_mod, "is_network_available", lambda timeout=2: False)
 
-        reader = dr_mod.DocumentReader(prefer_mineru_sdk=False)
+        reader = dr_mod.DocumentReader()
         reader._pdf = FakePdf()
         reader._office = FakeOffice()
         reader._image = FakeImage()
@@ -327,14 +330,14 @@ class TestFacadeDispatcher:
 # ---------------------------------------------------------------------------
 class TestFallbackChain:
     def test_network_false_skips_mineru(self, monkeypatch, tmp_path):
+        import document_reader.document_reader as dr_mod
+
         # Write a simple CSV (pure text path, no markitdown needed)
         f = tmp_path / "a.csv"
         f.write_text("a,b,c\n1,2,3\n4,5,6")
-        monkeypatch.setattr(
-            "src.utils.dependency_checker.is_network_available",
-            lambda timeout=2: False,
-        )
-        reader = DocumentReader(prefer_mineru_sdk=True)
+        # Patch the name bound in the facade module (where the import landed)
+        monkeypatch.setattr(dr_mod, "is_network_available", lambda timeout=2: False)
+        reader = DocumentReader()
         # CSV goes through text_parser regardless; verify capability reports no network
         cap = reader.capability()
         assert cap["network"] is False
@@ -348,7 +351,7 @@ class TestFallbackChain:
         f2 = tmp_path / "missing.txt"
         f3 = tmp_path / "also_good.csv"
         f3.write_text("id,name\n1,alice")
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         results = reader.read_batch([f1, f2, f3], fail_fast=False)
         assert len(results) == 3
         assert isinstance(results[0], ParsedDocument)
@@ -380,11 +383,12 @@ class TestMarkItDownIntegration:
         with pd.ExcelWriter(f) as w:
             df1.to_excel(w, sheet_name="S1", index=False)
             df2.to_excel(w, sheet_name="S2", index=False)
-        reader = DocumentReader(prefer_mineru_sdk=False)
+        reader = DocumentReader()
         doc = reader.read(f)
         assert len(doc.text) > 0 or len(doc.markdown) > 0
-        # Office parser augments markitdown with pandas for extra table extraction
-        assert doc.parser_used.endswith("markitdown") or "markitdown" in doc.parser_used
+        # Either MinerU cloud parses it directly, or it falls through to markitdown
+        # (which may also be augmented by pandas for .xlsx table extraction)
+        assert "mineru" in doc.parser_used or "markitdown" in doc.parser_used
 
 
 @pytest.mark.skipif(
@@ -395,7 +399,7 @@ class TestMinerUFlashIntegration:
     def test_small_txt_via_mineru_catch_all(self, tmp_path):
         # MinerU mainly targets PDF/Office/image; just check availability here.
         # If user has no token, avoid real PDF runs (would trigger large-file error)
-        reader = DocumentReader(prefer_mineru_sdk=True)
+        reader = DocumentReader()
         cap = reader.capability()
         assert cap["mineru_sdk"] is True
 

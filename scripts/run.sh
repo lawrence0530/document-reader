@@ -90,5 +90,5 @@ fi
 echo "[run] Ensuring Python 3.12 + dependencies installed..."
 "$UV_EXE" sync --all-extras
 
-# -------- 4. Real work: forward all arguments to src/main.py --------
-"$UV_EXE" run python "$SKILL_DIR/src/main.py" "$@"
+# -------- 4. Real work: forward all arguments to main (module mode, avoids script-directory sys.path trap) --------
+"$UV_EXE" run python -m document_reader.main "$@"

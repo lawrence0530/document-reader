@@ -15,13 +15,11 @@ log = logging.getLogger(__name__)
 class ImageParser:
     def __init__(
         self,
-        prefer_mineru_sdk: bool = True,
         mineru_parser: MinerUSdkParser | None = None,
         markitdown_wrapper: MarkItDownWrapper | None = None,
         llm_client: Any | None = None,
         llm_model: str | None = None,
     ) -> None:
-        self.prefer_mineru_sdk = prefer_mineru_sdk
         self.mineru = mineru_parser
         self.markitdown = markitdown_wrapper
         self.llm_client = llm_client
@@ -63,12 +61,15 @@ class ImageParser:
         chain_used: list[str] = []
         pillow_meta = self._extract_image_meta(path)
 
-        # L1: mineru-open-sdk (online)
-        if self.prefer_mineru_sdk and self.mineru is not None:
+        # L1: mineru-open-sdk (always first when available)
+        if self.mineru is not None:
             try:
                 sdk_opts: dict[str, Any] = {}
                 if is_ocr is not None:
                     sdk_opts["is_ocr"] = bool(is_ocr)
+                mineru_mode = extra.get("mineru_mode")
+                if mineru_mode is not None:
+                    sdk_opts["mineru_mode"] = mineru_mode
                 doc = self.mineru.parse(
                     path,
                     file_type=file_type,

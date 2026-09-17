@@ -21,12 +21,10 @@ _MIN_TEXT_LEN = 50
 class PdfParser:
     def __init__(
         self,
-        prefer_mineru_sdk: bool = True,
         mineru_parser: MinerUSdkParser | None = None,
         markitdown_wrapper: MarkItDownWrapper | None = None,
         markitdown_ocr_wrapper: MarkItDownWrapper | None = None,
     ) -> None:
-        self.prefer_mineru_sdk = prefer_mineru_sdk
         self.mineru = mineru_parser
         self.markitdown = markitdown_wrapper
         self.markitdown_ocr = markitdown_ocr_wrapper
@@ -111,12 +109,15 @@ class PdfParser:
         chain: list[str] = []
         last_doc: ParsedDocument | None = None
 
-        # L1: mineru-open-sdk
-        if self.prefer_mineru_sdk and self.mineru is not None:
+        # L1: mineru-open-sdk (always first when available)
+        if self.mineru is not None:
             try:
                 sdk_opts: dict[str, Any] = {}
                 if pages:
                     sdk_opts["pages"] = pages
+                mineru_mode = extra.get("mineru_mode")
+                if mineru_mode is not None:
+                    sdk_opts["mineru_mode"] = mineru_mode
                 doc = self.mineru.parse(
                     path,
                     file_type=file_type,

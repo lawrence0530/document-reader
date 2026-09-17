@@ -26,14 +26,13 @@ dependencies = [
     "pandas",
     "Pillow",
     "chardet",
+    "httpx",
+    "openai",
+    "markitdown-ocr",
+    "pytest>=8",
+    "pytest-cov",
+    "python-magic",
 ]
 
-[project.optional-dependencies]
-magic = ["python-magic"]
-ocr = ["markitdown-ocr", "openai"]
-dev = ["pytest>=8", "pytest-cov"]
-all = ["document-reader[magic,ocr,dev]"]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/document_reader"]

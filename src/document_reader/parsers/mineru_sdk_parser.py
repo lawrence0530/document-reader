@@ -31,15 +31,17 @@ def _estimate_pages(path: Path, file_type: str) -> int | None:
         return None
 
 
-def _pick_mode(size_mb: float, pages: int | None, has_token: bool) -> str:
-    if (
-        size_mb <= FLASH_MAX_MB
-        and (pages is None or pages <= FLASH_MAX_PAGES)
-    ):
-        return "flash"
+def _pick_mode(
+    size_mb: float,
+    pages: int | None,
+    has_token: bool,
+    user_mode_override: str | None = None,
+) -> str:
+    if user_mode_override in ("flash", "precision"):
+        return user_mode_override
     if has_token:
         return "precision"
-    return "flash_but_oversized"
+    return "flash"
 
 
 class MinerUSdkParser:
@@ -118,21 +120,19 @@ class MinerUSdkParser:
         return tables
 
     def _call_flash(self, client: Any, path: str, extra: dict[str, Any]) -> tuple[Any, str]:
-        kwargs = dict(extra)
-        kwargs.setdefault("file_path", path)
+        kwargs = {k: v for k, v in extra.items() if k not in ("file_path", "file_type", "max_file_size_mb", "mineru_mode")}
         if self.ocr is not None:
             kwargs.setdefault("is_ocr", bool(self.ocr))
         if self.timeout:
             kwargs.setdefault("timeout", self.timeout)
         try:
-            return client.flash_extract(**kwargs), "mineru-open-sdk[flash]"
+            return client.flash_extract(path, **kwargs), "mineru-open-sdk[flash]"
         except TypeError:
             kwargs.pop("is_ocr", None)
-            return client.flash_extract(**kwargs), "mineru-open-sdk[flash]"
+            return client.flash_extract(path, **kwargs), "mineru-open-sdk[flash]"
 
     def _call_precision(self, client: Any, path: str, extra: dict[str, Any]) -> tuple[Any, str]:
-        kwargs = dict(extra)
-        kwargs.setdefault("file_path", path)
+        kwargs = {k: v for k, v in extra.items() if k not in ("file_path", "file_type", "max_file_size_mb", "mineru_mode")}
         if self.ocr is not None:
             kwargs.setdefault("ocr", bool(self.ocr))
         kwargs.setdefault("formula", self.formula)
@@ -142,13 +142,14 @@ class MinerUSdkParser:
             kwargs.setdefault("model", self.model)
         if self.timeout:
             kwargs.setdefault("timeout", self.timeout)
-        return client.extract(**kwargs), "mineru-open-sdk[precision]"
+        return client.extract(path, **kwargs), "mineru-open-sdk[precision]"
 
     def parse(
         self,
         file_path: str | Path,
         file_type: str = "pdf",
         max_file_size_mb: int = 500,
+        mineru_mode: str | None = None,
         **extra: Any,
     ) -> ParsedDocument:
         path = Path(file_path).resolve()
@@ -158,21 +159,14 @@ class MinerUSdkParser:
         size_mb = size_bytes / 1024 / 1024
         pages = _estimate_pages(path, file_type)
         has_token = bool(self.token)
-        mode = _pick_mode(size_mb, pages, has_token)
+        mode = _pick_mode(size_mb, pages, has_token, mineru_mode)
 
         client = self._get_client()
         parser_label = ""
         try:
-            if mode == "flash_but_oversized":
-                log.warning(
-                    "File %.1fMB (pages=%s) exceeds flash limits, no MINERU_TOKEN set; "
-                    "will attempt flash anyway then fall back if server rejects",
-                    size_mb, pages,
-                )
-                result, parser_label = self._call_flash(client, str(path), extra)
-            elif mode == "precision":
+            if mode == "precision":
                 result, parser_label = self._call_precision(client, str(path), extra)
-            else:
+            else:  # flash
                 result, parser_label = self._call_flash(client, str(path), extra)
         except DocumentParseError:
             raise
@@ -184,7 +178,7 @@ class MinerUSdkParser:
             ) from e
         except Exception as e:
             msg = str(e).lower()
-            retryable = any(k in msg for k in ("network", "timeout", "503", "504", "502", "429", "connection"))
+            retryable = any(k in msg for k in ("network", "timeout", "503", "504", "502", "429", "connection", "unauthorized", "auth", "token"))
             raise DocumentParseError(
                 f"MinerU SDK error[{type(e).__name__}]: {e}",
                 original_error=e,

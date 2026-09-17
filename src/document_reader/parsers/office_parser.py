@@ -24,11 +24,9 @@ _OFFICE_GROUP = {
 class OfficeParser:
     def __init__(
         self,
-        prefer_mineru_sdk: bool = True,
         mineru_parser: MinerUSdkParser | None = None,
         markitdown_wrapper: MarkItDownWrapper | None = None,
     ) -> None:
-        self.prefer_mineru_sdk = prefer_mineru_sdk
         self.mineru = mineru_parser
         self.markitdown = markitdown_wrapper
 
@@ -68,13 +66,18 @@ class OfficeParser:
         chain_used: list[str] = []
         group = _OFFICE_GROUP.get(file_type, "word")
 
-        # L1: mineru-open-sdk (online)
-        if self.prefer_mineru_sdk and self.mineru is not None:
+        # L1: mineru-open-sdk (always first when available)
+        if self.mineru is not None:
             try:
+                sdk_opts: dict[str, Any] = {}
+                mineru_mode = extra.get("mineru_mode")
+                if mineru_mode is not None:
+                    sdk_opts["mineru_mode"] = mineru_mode
                 return self.mineru.parse(
                     path,
                     file_type=file_type,
                     max_file_size_mb=max_file_size_mb,
+                    **sdk_opts,
                 )
             except DocumentParseError as e:
                 log.warning("Office L1 mineru-sdk (%s) failed: %s", file_type, e)

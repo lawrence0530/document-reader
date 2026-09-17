@@ -156,7 +156,7 @@ safe defaults: no flags means "default online parse, JSON output".
 | "file has no extension / override the file type"      | `--file-type-hint docx` (or pdf / xlsx / pptx / png / csv / json / ...) |
 | "force big-file MinerU precision mode"                | `--mineru-mode precision` (requires `MINERU_TOKEN`) |
 | "force small-file MinerU flash mode"                  | `--mineru-mode flash` |
-| "I am offline / skip MinerU cloud"                    | `--no-prefer-mineru-sdk` + optionally `--enable-ocr-plugin` for scanned PDF |
+| "I am offline / skip MinerU cloud"                    | None - the cascade degrades automatically.  Explicitly opt into `--enable-ocr-plugin` only if scanned PDF/Office OCR is needed and you will cover LLM image costs. |
 | "show only plain text, not the full JSON"             | `--output-format text --chars 4000` |
 | "show markdown only"                                  | `--output-format markdown --chars 8000` |
 | "give me a short preview / what's in this file"       | `--output-format preview --chars 2000` |
@@ -230,10 +230,9 @@ skills-ref validate .
   local markitdown coverage is spotty.  In a pure-local environment,
   suggest `soffice --convert-to {docx,xlsx,pptx} <file>` first.
 - **Cost controls for markitdown-ocr / LLM image descriptions.**
-  Defaults are `--no-prefer-mineru-sdk` off + `--enable-ocr-plugin`
-  off.  Never enable `--enable-ocr-plugin` unless the user explicitly
-  asked for LLM-powered OCR and understands billing.  `--ocr` (MinerU
-  cloud) is the default and free-for-normal-use path.
+  `--enable-ocr-plugin` is **off by default**.  Never enable it unless
+  the user explicitly asked for LLM-powered OCR and understands billing.
+  `--ocr` (MinerU cloud) is the default path and free for normal use.
 - **MinerU rate-limit / service outage.**  The first
   `DocumentParseError` with `retryable=True` is normal; the fallback
   cascade auto-degrades.  Do not loop-retry the online branch - it

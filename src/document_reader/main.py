@@ -6,13 +6,22 @@ DocumentReader -> prints JSON.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
 
+if sys.platform.startswith("win"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 from document_reader import DocumentReader, DocumentParseError, ParsedDocument
+
+import httpx
+from markitdown import MarkItDown  # noqa: F401  (dependency probe marker)
+from openai import OpenAI
 
 
 def _first_env(*keys: str) -> str | None:
@@ -89,13 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="llm_model",
         default=None,
         help="Optional LLM model name for offline OCR plugin.",
-    )
-    p.add_argument(
-        "--no-prefer-mineru-sdk",
-        dest="prefer_mineru_sdk",
-        action="store_false",
-        default=True,
-        help="Disable MinerU cloud entirely (force fully local parsing).",
     )
     p.add_argument(
         "--enable-ocr-plugin",
@@ -181,12 +183,10 @@ def render_error(e: DocumentParseError, file_arg: str) -> str:
 
 def extra_kwargs_from_args(args: argparse.Namespace) -> dict[str, Any]:
     kw: dict[str, Any] = {}
-    if args.mineru_mode == "flash":
-        kw["mineru_prefer_flash"] = True
-    elif args.mineru_mode == "precision":
-        kw["mineru_prefer_flash"] = False
+    if args.mineru_mode in ("flash", "precision"):
+        kw["mineru_mode"] = args.mineru_mode
     if args.ocr:
-        kw["mineru_ocr"] = True
+        kw["is_ocr"] = True
     return kw
 
 
@@ -198,23 +198,11 @@ def _build_offline_llm_client(args: argparse.Namespace) -> Any | None:
     )
     if not api_key:
         return None
-    try:
-        from markitdown import MarkItDown  # noqa: F401  # just probe availability
-    except Exception:
-        return None
-    try:
-        import httpx
-        from openai import OpenAI
-    except Exception:
-        return None
     kwargs: dict[str, Any] = {"api_key": api_key}
     if args.llm_base_url:
         kwargs["base_url"] = args.llm_base_url
     kwargs.setdefault("http_client", httpx.Client(timeout=120))
-    try:
-        return OpenAI(**kwargs)
-    except Exception:
-        return None
+    return OpenAI(**kwargs)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -237,7 +225,6 @@ def main(argv: list[str] | None = None) -> int:
         llm_client = _build_offline_llm_client(args)
         mineru_token = args.mineru_token or _first_env("MINERU_TOKEN")
         reader = DocumentReader(
-            prefer_mineru_sdk=args.prefer_mineru_sdk,
             mineru_token=mineru_token,
             enable_markitdown_ocr=args.enable_ocr_plugin,
             llm_client=llm_client,

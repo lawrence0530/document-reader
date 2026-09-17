@@ -34,7 +34,6 @@ class DocumentReader:
     def __init__(
         self,
         # --- mineru-open-sdk ---
-        prefer_mineru_sdk: bool = True,
         mineru_token: str | None = None,
         mineru_ocr: bool | None = None,
         mineru_language: str = "ch",
@@ -57,28 +56,25 @@ class DocumentReader:
                 f"DocumentReader requires Python 3.12+. Current: {sys.version.split()[0]} "
                 "(install uv and open this repo, uv will auto-download Python 3.12 from .python-version)"
             )
-        self.prefer_mineru_sdk = bool(prefer_mineru_sdk)
         self.max_file_size_mb = int(max_file_size_mb)
         self.enable_markitdown_ocr = bool(enable_markitdown_ocr)
 
-        use_online = self.prefer_mineru_sdk and is_mineru_sdk_available() and is_network_available()
         self._mineru: MinerUSdkParser | None = None
-        if use_online or self.prefer_mineru_sdk:
-            if is_mineru_sdk_available():
-                try:
-                    self._mineru = MinerUSdkParser(
-                        token=mineru_token,
-                        ocr=mineru_ocr,
-                        language=mineru_language,
-                        model=mineru_model,
-                        formula=mineru_formula,
-                        table=mineru_table,
-                        timeout=mineru_timeout,
-                        base_url=mineru_base_url,
-                    )
-                except Exception as e:
-                    log.warning("MinerU parser init failed, will skip. Error: %s", e)
-                    self._mineru = None
+        if is_mineru_sdk_available():
+            try:
+                self._mineru = MinerUSdkParser(
+                    token=mineru_token,
+                    ocr=mineru_ocr,
+                    language=mineru_language,
+                    model=mineru_model,
+                    formula=mineru_formula,
+                    table=mineru_table,
+                    timeout=mineru_timeout,
+                    base_url=mineru_base_url,
+                )
+            except Exception as e:
+                log.warning("MinerU parser init failed, will skip. Error: %s", e)
+                self._mineru = None
 
         self._markitdown: MarkItDownWrapper | None = None
         self._markitdown_ocr: MarkItDownWrapper | None = None
@@ -108,19 +104,16 @@ class DocumentReader:
         self._llm_model = llm_model
         self._text = TextParser()
         self._image = ImageParser(
-            prefer_mineru_sdk=self.prefer_mineru_sdk,
             mineru_parser=self._mineru,
             markitdown_wrapper=self._markitdown,
             llm_client=llm_client,
             llm_model=llm_model,
         )
         self._office = OfficeParser(
-            prefer_mineru_sdk=self.prefer_mineru_sdk,
             mineru_parser=self._mineru,
             markitdown_wrapper=self._markitdown,
         )
         self._pdf = PdfParser(
-            prefer_mineru_sdk=self.prefer_mineru_sdk,
             mineru_parser=self._mineru,
             markitdown_wrapper=self._markitdown,
             markitdown_ocr_wrapper=self._markitdown_ocr,
@@ -219,6 +212,5 @@ class DocumentReader:
             "markitdown_ocr_enabled": self._markitdown_ocr is not None,
             "markitdown_ocr_plugin_installed": is_markitdown_ocr_plugin_available(),
             "network": is_network_available(),
-            "prefer_mineru_sdk": self.prefer_mineru_sdk,
             "max_file_size_mb": self.max_file_size_mb,
         }
