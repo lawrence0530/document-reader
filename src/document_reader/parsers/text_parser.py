@@ -90,12 +90,15 @@ class TextParser:
     def parse(
         self,
         file_path: str | Path,
+        output_dir: str | Path,
         file_type: str = "txt",
         max_file_size_mb: int = 500,
         password: str | None = None,
         **extra: Any,
     ) -> ParsedDocument:
         path = Path(file_path).resolve()
+        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             raise DocumentParseError(f"File not found: {path}")
         size_bytes = _safe_file_size_check(path, max_file_size_mb)
@@ -105,17 +108,17 @@ class TextParser:
         metadata["encoding_used"] = used_enc
         metadata["size_bytes"] = size_bytes
 
-        tables: list[list[list[str]]] = []
         markdown = ""
-        pages: list[str] = []
 
         try:
             if file_type == "csv":
-                text, tables = _read_csv(path)
-                if tables:
-                    md_rows = ["| " + " | ".join(tables[0][0]) + " |",
-                               "|" + "|".join(["---"] * len(tables[0][0])) + "|"]
-                    for row in tables[0][1:]:
+                formatted, _ = _read_csv(path)
+                text = formatted
+                if _:
+                    header, body = _[0][0], _[0][1:]
+                    md_rows = ["| " + " | ".join(header) + " |",
+                               "|" + "|".join(["---"] * len(header)) + "|"]
+                    for row in body:
                         md_rows.append("| " + " | ".join(row) + " |")
                     markdown = "\n".join(md_rows)
             elif file_type == "json":
@@ -124,29 +127,20 @@ class TextParser:
             elif file_type == "xml":
                 text = _pretty_xml(text)
                 markdown = "```xml\n" + text + "\n```"
-            elif file_type == "md":
-                markdown = text
-            elif file_type == "html":
-                markdown = text
-            elif file_type == "txt":
-                markdown = text
             else:
                 markdown = text
         except Exception as e:
             log.warning("Optional specialized formatting for %s failed: %s", file_type, e)
+            markdown = text
 
-        if file_type in ("txt", "md", "html", "csv"):
-            chunks = [c.strip() for c in text.split("\n\n\n") if c.strip()]
-            if len(chunks) >= 2:
-                pages = chunks
-
+        (out_dir / "full.md").write_text(markdown or text, encoding="utf-8")
         return ParsedDocument(
             file_path=str(path),
             file_type=file_type,
-            text=text,
-            pages=pages,
-            tables=tables,
-            markdown=markdown or text,
+            text="",
+            pages=[],
+            tables=[],
+            markdown="",
             metadata=metadata,
             parser_used=f"text_parser[{file_type}]",
         )

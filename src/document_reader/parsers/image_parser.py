@@ -48,12 +48,15 @@ class ImageParser:
     def parse(
         self,
         file_path: str | Path,
+        output_dir: str | Path,
         file_type: str = "image",
         max_file_size_mb: int = 500,
         is_ocr: bool | None = None,
         **extra: Any,
     ) -> ParsedDocument:
         path = Path(file_path).resolve()
+        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             raise DocumentParseError(f"File not found: {path}")
         size_bytes = _safe_file_size_check(path, max_file_size_mb)
@@ -61,7 +64,6 @@ class ImageParser:
         chain_used: list[str] = []
         pillow_meta = self._extract_image_meta(path)
 
-        # L1: mineru-open-sdk (always first when available)
         if self.mineru is not None:
             try:
                 sdk_opts: dict[str, Any] = {}
@@ -72,6 +74,7 @@ class ImageParser:
                     sdk_opts["mineru_mode"] = mineru_mode
                 doc = self.mineru.parse(
                     path,
+                    out_dir,
                     file_type=file_type,
                     max_file_size_mb=max_file_size_mb,
                     **sdk_opts,
@@ -79,11 +82,10 @@ class ImageParser:
                 doc.metadata.update(pillow_meta)
                 return doc
             except DocumentParseError as e:
-                log.warning("Image L1 mineru-sdk failed: %s", e)
                 cause = type(e.original_error or e).__name__
                 chain_used.append(f"mineru-open-sdk(failed {cause})")
+                log.warning("Image L1 mineru-sdk failed: %s", e)
 
-        # L2: markitdown[all] + llm_client if given (no markitdown-ocr needed for standalone images)
         md = self.markitdown or MarkItDownWrapper(
             enable_plugins=False,
             llm_client=self.llm_client,
@@ -92,42 +94,34 @@ class ImageParser:
         try:
             doc = md.parse(
                 path,
+                out_dir,
                 file_type=file_type,
                 max_file_size_mb=max_file_size_mb,
             )
             doc.metadata.update(pillow_meta)
             if chain_used:
                 doc.parser_used = " -> ".join([*chain_used, doc.parser_used])
-            # Fallback: if text is empty but we have EXIF, populate with placeholder + meta
-            if len(doc.text.strip()) < 20:
-                hint = (
-                    "Standalone image produced no text. To recognize text inside images:\n"
-                    "  - (preferred) keep mineru-sdk online available and pass is_ocr=True\n"
-                    "  - (offline) construct DocumentReader with llm_client + llm_model so markitdown[all] can call LLM Vision."
-                )
-                if not doc.text:
-                    doc.text = hint
-                doc.metadata["ocr_hint"] = hint
             return doc
         except DocumentParseError as e:
             chain_used.append("markitdown(failed " + type(e.original_error or e).__name__ + ")")
 
-        # Last fallback: return EXIF only
         meta = _file_meta(path)
         meta.update(pillow_meta)
         meta["size_bytes"] = size_bytes
-        empty_text = (
-            "Image parsing unable to extract text. Options:\n"
-            "  1) Online: enable mineru-open-sdk + is_ocr=True (MINERU_TOKEN optional for flash)\n"
-            "  2) Offline: pass llm_client + llm_model to DocumentReader so markitdown LLM Vision describes the image."
+        fallback_md = (
+            "![image](" + path.as_uri() + ")\n\n"
+            + "Unable to extract descriptive text. To recognize text inside images:\n"
+            + "  - Online: enable mineru-open-sdk and pass is_ocr=True\n"
+            + "  - Offline: construct DocumentReader with llm_client + llm_model."
         )
+        (out_dir / "full.md").write_text(fallback_md, encoding="utf-8")
         return ParsedDocument(
             file_path=str(path),
             file_type=file_type,
-            text=empty_text,
+            text="",
             pages=[],
             tables=[],
-            markdown="![" + (pillow_meta.get("image_format") or "image") + "](" + path.as_uri() + ")",
+            markdown="",
             metadata=meta,
             parser_used=" -> ".join(chain_used) if chain_used else "image_parser[meta-only]",
         )

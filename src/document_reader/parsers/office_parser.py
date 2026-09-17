@@ -30,86 +30,152 @@ class OfficeParser:
         self.mineru = mineru_parser
         self.markitdown = markitdown_wrapper
 
+    def parse_batch(
+        self,
+        items: list[tuple[str | Path, str | Path]],
+        *,
+        fail_fast: bool = False,
+        file_type: str = "docx",
+        max_file_size_mb: int = 500,
+        **extra: Any,
+    ) -> list[ParsedDocument | DocumentParseError]:
+        sdk_opts: dict[str, Any] = {}
+        mineru_mode = extra.get("mineru_mode")
+        if mineru_mode is not None:
+            sdk_opts["mineru_mode"] = mineru_mode
+        mineru_results: list[ParsedDocument | DocumentParseError | None] = [None] * len(items)
+        if self.mineru is not None:
+            try:
+                raw = self.mineru.parse_batch(
+                    items,
+                    file_type=file_type,
+                    max_file_size_mb=max_file_size_mb,
+                    fail_fast=fail_fast,
+                    **sdk_opts,
+                )
+                for i, r in enumerate(raw):
+                    if i < len(mineru_results):
+                        mineru_results[i] = r
+            except DocumentParseError as e:
+                if fail_fast:
+                    raise
+                for i in range(len(items)):
+                    mineru_results[i] = e
+            except Exception as e:
+                wrapped = DocumentParseError(
+                    f"MinerU batch init error (office): {type(e).__name__}: {e}",
+                    original_error=e,
+                    retryable=False,
+                )
+                if fail_fast:
+                    raise wrapped from e
+                for i in range(len(items)):
+                    mineru_results[i] = wrapped
+        results: list[ParsedDocument | DocumentParseError] = []
+        group = _OFFICE_GROUP.get(file_type, "word")
+        for i, (file_path, output_dir) in enumerate(items):
+            path = Path(file_path).resolve()
+            out_dir = Path(output_dir).expanduser().resolve()
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    raise DocumentParseError(f"File not found: {path}")
+                _safe_file_size_check(path, max_file_size_mb)
+            except DocumentParseError as e:
+                if fail_fast:
+                    raise
+                results.append(e)
+                continue
+            except Exception as e:
+                wrapped = DocumentParseError(
+                    f"Office prepare error[{type(e).__name__}]: {e}",
+                    original_error=e,
+                    retryable=False,
+                )
+                if fail_fast:
+                    raise wrapped from e
+                results.append(wrapped)
+                continue
+            doc_or_err = mineru_results[i] if i < len(mineru_results) else None
+            chain_used: list[str] = []
+            if isinstance(doc_or_err, ParsedDocument):
+                if group == "excel":
+                    try:
+                        pandas_md = self._pandas_excel_to_markdown(path)
+                        md_path = out_dir / "full.md"
+                        current_md = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+                        if len(pandas_md) > len(current_md):
+                            md_path.write_text(pandas_md, encoding="utf-8")
+                    except Exception as ee:
+                        log.debug("pandas excel overwrite skipped for %s: %s", path.name, ee)
+                results.append(doc_or_err)
+                continue
+            if isinstance(doc_or_err, DocumentParseError):
+                cause = type(doc_or_err.original_error or doc_or_err).__name__
+                chain_used.append(f"mineru-open-sdk(failed {cause})")
+                log.warning("Office L1 mineru-sdk (%s) batch failed for %s: %s", file_type, path.name, doc_or_err)
+            md = self.markitdown or MarkItDownWrapper(enable_plugins=False)
+            try:
+                doc = md.parse(path, out_dir, file_type=file_type, max_file_size_mb=max_file_size_mb)
+                if group == "excel":
+                    pandas_md = self._pandas_excel_to_markdown(path)
+                    current_md = (out_dir / "full.md").read_text(encoding="utf-8") or ""
+                    if len(pandas_md) > len(current_md):
+                        (out_dir / "full.md").write_text(pandas_md, encoding="utf-8")
+                if chain_used:
+                    doc.parser_used = " -> ".join([*chain_used, doc.parser_used])
+                results.append(doc)
+                continue
+            except DocumentParseError as e:
+                chain_used.append("markitdown(failed " + type(e.original_error or e).__name__ + ")")
+            chain = " -> ".join(chain_used) if chain_used else "no parsers tried"
+            extra_hint = ""
+            if file_type in ("doc", "xls", "ppt"):
+                extra_hint = (
+                    f"\nHint: legacy .{file_type} binary format has limited local support. "
+                    f"Convert first: `soffice --convert-to {file_type}x {path.name}` (LibreOffice required)."
+                )
+            results.append(
+                DocumentParseError(
+                    f"Unable to parse Office file ({file_type}). Chain: {chain}.{extra_hint}",
+                    retryable=False,
+                )
+            )
+        return results
+
     @staticmethod
-    def _pandas_excel_preview(path: Path) -> tuple[str, list[list[list[str]]]]:
-        tables: list[list[list[str]]] = []
-        preview_parts: list[str] = []
+    def _pandas_excel_to_markdown(path: Path) -> str:
+        parts: list[str] = []
         try:
             import pandas as pd
 
             sheets = pd.read_excel(path, sheet_name=None, nrows=1000)
             for sheet_name, df in sheets.items():
                 preview = df.head(100)
-                header = [str(c) for c in preview.columns.tolist()]
-                body = [
-                    [str(c) if c is not None else "" for c in row]
-                    for row in preview.values.tolist()
-                ]
-                if header or body:
-                    tables.append([header, *body])
-                preview_parts.append(f"## Sheet: {sheet_name}\n" + preview.to_string(index=False))
+                parts.append(f"## Sheet: {sheet_name}")
+                parts.append(preview.to_markdown(index=False))
         except Exception as e:
             log.debug("pandas excel preview failed for %s: %s", path, e)
-        return "\n\n".join(preview_parts), tables
+        return "\n\n".join(parts)
 
     def parse(
         self,
         file_path: str | Path,
+        output_dir: str | Path,
         file_type: str = "docx",
         max_file_size_mb: int = 500,
         **extra: Any,
     ) -> ParsedDocument:
-        path = Path(file_path).resolve()
-        if not path.exists():
-            raise DocumentParseError(f"File not found: {path}")
-        _safe_file_size_check(path, max_file_size_mb)
-        chain_used: list[str] = []
-        group = _OFFICE_GROUP.get(file_type, "word")
-
-        # L1: mineru-open-sdk (always first when available)
-        if self.mineru is not None:
-            try:
-                sdk_opts: dict[str, Any] = {}
-                mineru_mode = extra.get("mineru_mode")
-                if mineru_mode is not None:
-                    sdk_opts["mineru_mode"] = mineru_mode
-                return self.mineru.parse(
-                    path,
-                    file_type=file_type,
-                    max_file_size_mb=max_file_size_mb,
-                    **sdk_opts,
-                )
-            except DocumentParseError as e:
-                log.warning("Office L1 mineru-sdk (%s) failed: %s", file_type, e)
-                chain_used.append("mineru-open-sdk(failed " + type(e.original_error or e).__name__ + ")")
-
-        # L2: markitdown[all]
-        md = self.markitdown or MarkItDownWrapper(enable_plugins=False)
-        try:
-            doc = md.parse(path, file_type=file_type, max_file_size_mb=max_file_size_mb)
-            # For Excel, reinforce tables via pandas (more reliable than md table reverse parse)
-            if group == "excel":
-                pandas_text, pandas_tables = self._pandas_excel_preview(path)
-                if pandas_tables:
-                    if not doc.tables:
-                        doc.tables = pandas_tables
-                    if pandas_text and len(pandas_text) > len(doc.text):
-                        doc.text = pandas_text
-            if chain_used:
-                doc.parser_used = " -> ".join([*chain_used, doc.parser_used])
-            return doc
-        except DocumentParseError as e:
-            chain_used.append("markitdown(failed " + type(e.original_error or e).__name__ + ")")
-
-        # Both failed -> helpful error
-        chain = " -> ".join(chain_used) if chain_used else "no parsers tried"
-        extra_hint = ""
-        if file_type in ("doc", "xls", "ppt"):
-            extra_hint = (
-                f"\nHint: legacy .{file_type} binary format has limited local support. "
-                f"Convert first: `soffice --convert-to {file_type}x {path.name}` (LibreOffice required)."
-            )
-        raise DocumentParseError(
-            f"Unable to parse Office file ({file_type}). Chain: {chain}.{extra_hint}",
-            retryable=False,
+        results = self.parse_batch(
+            [(file_path, output_dir)],
+            file_type=file_type,
+            max_file_size_mb=max_file_size_mb,
+            fail_fast=True,
+            **extra,
         )
+        if not results:
+            raise DocumentParseError("OfficeParser.parse_batch returned empty for single-file input")
+        doc = results[0]
+        if isinstance(doc, DocumentParseError):
+            raise doc
+        return doc

@@ -96,11 +96,14 @@ class MarkItDownWrapper:
     def parse(
         self,
         file_path: str | Path,
+        output_dir: str | Path,
         file_type: str = "pdf",
         max_file_size_mb: int = 500,
         **extra: Any,
     ) -> ParsedDocument:
         path = Path(file_path).resolve()
+        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             raise DocumentParseError(f"File not found: {path}")
         _safe_file_size_check(path, max_file_size_mb)
@@ -128,18 +131,7 @@ class MarkItDownWrapper:
                 if val:
                     text_content = str(val)
                     break
-        pages: list[str] = []
-        if text_content:
-            page_splits = [
-                p for p in re.split(r"<!--\s*page\s+\d+\s*-->", text_content) if p.strip()
-            ]
-            if len(page_splits) >= 2:
-                pages = [p.strip() for p in page_splits]
-            else:
-                chunks = text_content.split("\n\n\n")
-                if len(chunks) >= 2:
-                    pages = [c.strip() for c in chunks if c.strip()]
-        tables = extract_markdown_tables(text_content)
+        (out_dir / "full.md").write_text(text_content, encoding="utf-8")
         metadata = _file_meta(path)
         if isinstance(result, dict):
             for key in ("title", "author", "subject", "keywords", "creator", "producer", "pages"):
@@ -157,10 +149,10 @@ class MarkItDownWrapper:
         return ParsedDocument(
             file_path=str(path),
             file_type=file_type,
-            text=text_content,
-            pages=pages,
-            tables=tables,
-            markdown=text_content,
+            text="",
+            pages=[],
+            tables=[],
+            markdown="",
             metadata=metadata,
             parser_used=f"markitdown{plugin_label}",
         )

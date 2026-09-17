@@ -125,6 +125,7 @@ class DocumentReader:
     def read(
         self,
         file_path: str | Path,
+        output_dir: str | Path,
         *,
         file_type_hint: str | None = None,
         password: str | None = None,
@@ -132,73 +133,193 @@ class DocumentReader:
         is_ocr: bool | None = None,
         **extra: Any,
     ) -> ParsedDocument:
-        path = Path(file_path).resolve()
-        if not path.exists():
-            raise DocumentParseError(f"File not found: {path}")
-        if not path.is_file():
-            raise DocumentParseError(f"Not a regular file: {path}")
-        try:
-            ftype = detect_file_type(path, override=file_type_hint)
-        except Exception as e:
-            raise DocumentParseError(
-                f"Failed to detect file type for {path.name}: {e}. "
-                f"Pass file_type_hint to override (e.g. file_type_hint='pdf').",
-                original_error=e,
-                retryable=False,
-            ) from e
-        common: dict[str, Any] = dict(
-            file_type=ftype,
-            max_file_size_mb=self.max_file_size_mb,
+        results = self.read_batch(
+            [file_path],
+            output_dir,
+            fail_fast=True,
+            file_type_hint=file_type_hint,
             password=password,
             pages=pages,
             is_ocr=is_ocr,
             **extra,
         )
-        if ftype == "pdf":
-            return self._pdf.parse(path, **common)
-        if ftype in OFFICE_TYPES:
-            return self._office.parse(path, **common)
-        if ftype in IMAGE_TYPES:
-            return self._image.parse(path, **common)
-        if ftype in TEXT_LIKE_TYPES:
-            return self._text.parse(path, **common)
-        if ftype == "unknown":
-            try:
-                return self._text.parse(path, **common)
-            except Exception as te:
-                log.debug("Text parser failed for unknown type (%s): %s", path.name, te)
-                if self._markitdown is not None:
-                    return self._markitdown.parse(path, **common)
-                raise
-        if self._markitdown is not None:
-            return self._markitdown.parse(path, **common)
-        return self._text.parse(path, **common)
+        if not results:
+            raise DocumentParseError("read_batch returned empty for single-file input")
+        doc = results[0]
+        if isinstance(doc, DocumentParseError):
+            raise doc
+        return doc
 
     def read_batch(
         self,
         file_paths: list[str | Path],
+        output_dir: str | Path,
         *,
         fail_fast: bool = False,
-        **read_kwargs: Any,
+        file_type_hint: str | None = None,
+        password: str | None = None,
+        pages: str | None = None,
+        is_ocr: bool | None = None,
+        **extra: Any,
     ) -> list[ParsedDocument | DocumentParseError]:
-        results: list[ParsedDocument | DocumentParseError] = []
-        for p in file_paths:
+        results: list[ParsedDocument | DocumentParseError | None] = [None] * len(file_paths)
+        prepared: list[tuple[int, Path, Path, str, dict[str, Any]] | None] = [None] * len(file_paths)
+        for i, raw_path in enumerate(file_paths):
             try:
-                results.append(self.read(p, **read_kwargs))
+                path = Path(raw_path).resolve()
+                if not path.exists():
+                    raise DocumentParseError(f"File not found: {path}")
+                if not path.is_file():
+                    raise DocumentParseError(f"Not a regular file: {path}")
+                try:
+                    ftype = detect_file_type(path, override=file_type_hint)
+                except Exception as e:
+                    raise DocumentParseError(
+                        f"Failed to detect file type for {path.name}: {e}. "
+                        f"Pass file_type_hint to override (e.g. file_type_hint='pdf').",
+                        original_error=e,
+                        retryable=False,
+                    ) from e
+                target_out = Path(output_dir).expanduser().resolve() / path.stem
+                common: dict[str, Any] = dict(
+                    output_dir=str(target_out),
+                    file_type=ftype,
+                    max_file_size_mb=self.max_file_size_mb,
+                    password=password,
+                    pages=pages,
+                    is_ocr=is_ocr,
+                    **extra,
+                )
+                prepared[i] = (i, path, target_out, ftype, common)
             except DocumentParseError as e:
                 if fail_fast:
                     raise
-                results.append(e)
+                results[i] = e
             except Exception as e:
                 wrapped = DocumentParseError(
-                    f"Unexpected error reading {p}: {type(e).__name__}: {e}",
+                    f"Unexpected error preparing {raw_path}: {type(e).__name__}: {e}",
                     original_error=e,
                     retryable=False,
                 )
                 if fail_fast:
                     raise wrapped from e
-                results.append(wrapped)
-        return results
+                results[i] = wrapped
+        pdf_group: list[tuple[int, Path, Path, str, dict[str, Any]]] = []
+        office_group: list[tuple[int, Path, Path, str, dict[str, Any]]] = []
+        image_group: list[tuple[int, Path, Path, str, dict[str, Any]]] = []
+        text_group: list[tuple[int, Path, Path, str, dict[str, Any]]] = []
+        unknown_group: list[tuple[int, Path, Path, str, dict[str, Any]]] = []
+        for item in prepared:
+            if item is None:
+                continue
+            _, _, _, ftype, _ = item
+            if ftype == "pdf":
+                pdf_group.append(item)
+            elif ftype in OFFICE_TYPES:
+                office_group.append(item)
+            elif ftype in IMAGE_TYPES:
+                image_group.append(item)
+            elif ftype in TEXT_LIKE_TYPES:
+                text_group.append(item)
+            else:
+                unknown_group.append(item)
+        for group, parser_fn, parser_has_batch in (
+            (pdf_group, self._pdf, True),
+            (office_group, self._office, True),
+            (image_group, self._image, False),
+            (text_group, self._text, False),
+            (unknown_group, None, False),
+        ):
+            if not group:
+                continue
+            if parser_has_batch and parser_fn is not None and hasattr(parser_fn, "parse_batch"):
+                ftype_shared = group[0][3]
+                all_same = all(it[3] == ftype_shared for it in group)
+                if all_same:
+                    items: list[tuple[Path, Path]] = [(it[1], it[2]) for it in group]
+                    shared_kw = dict(group[0][4])
+                    shared_kw.pop("output_dir", None)
+                    shared_kw.pop("file_type", None)
+                    try:
+                        batch_results = parser_fn.parse_batch(
+                            items,
+                            fail_fast=fail_fast,
+                            file_type=ftype_shared,
+                            **shared_kw,
+                        )
+                        for j, (orig_idx, _, _, _, _) in enumerate(group):
+                            if j < len(batch_results):
+                                results[orig_idx] = batch_results[j]
+                            else:
+                                results[orig_idx] = DocumentParseError(
+                                    f"Batch parser returned fewer results than inputs for {ftype_shared}",
+                                    retryable=False,
+                                )
+                        continue
+                    except DocumentParseError:
+                        if fail_fast:
+                            raise
+                    except Exception as e:
+                        wrapped = DocumentParseError(
+                            f"Batch parser setup error ({ftype_shared}): {type(e).__name__}: {e}",
+                            original_error=e,
+                            retryable=False,
+                        )
+                        if fail_fast:
+                            raise wrapped from e
+                        for orig_idx, _, _, _, _ in group:
+                            results[orig_idx] = wrapped
+                        continue
+            for orig_idx, path, target_out, ftype, common in group:
+                try:
+                    if ftype == "pdf":
+                        doc = self._pdf.parse(path, **common)
+                    elif ftype in OFFICE_TYPES:
+                        doc = self._office.parse(path, **common)
+                    elif ftype in IMAGE_TYPES:
+                        doc = self._image.parse(path, **common)
+                    elif ftype in TEXT_LIKE_TYPES:
+                        doc = self._text.parse(path, **common)
+                    elif ftype == "unknown":
+                        try:
+                            doc = self._text.parse(path, **common)
+                        except Exception as te:
+                            log.debug("Text parser failed for unknown type (%s): %s", path.name, te)
+                            if self._markitdown is not None:
+                                doc = self._markitdown.parse(path, **common)
+                            else:
+                                raise
+                    else:
+                        if self._markitdown is not None:
+                            doc = self._markitdown.parse(path, **common)
+                        else:
+                            doc = self._text.parse(path, **common)
+                    results[orig_idx] = doc
+                except DocumentParseError as e:
+                    if fail_fast:
+                        raise
+                    results[orig_idx] = e
+                except Exception as e:
+                    wrapped = DocumentParseError(
+                        f"Unexpected error reading {path}: {type(e).__name__}: {e}",
+                        original_error=e,
+                        retryable=False,
+                    )
+                    if fail_fast:
+                        raise wrapped from e
+                    results[orig_idx] = wrapped
+        final: list[ParsedDocument | DocumentParseError] = []
+        for i, r in enumerate(results):
+            if r is None:
+                final.append(
+                    DocumentParseError(
+                        f"No parser produced a result for index {i} ({file_paths[i]})",
+                        retryable=False,
+                    )
+                )
+            else:
+                final.append(r)
+        return final
 
     # ------------------------------------------------------------------
     # Info helpers

@@ -15,8 +15,6 @@ from .mineru_sdk_parser import MinerUSdkParser
 
 log = logging.getLogger(__name__)
 
-_MIN_TEXT_LEN = 50
-
 
 class PdfParser:
     def __init__(
@@ -29,10 +27,167 @@ class PdfParser:
         self.markitdown = markitdown_wrapper
         self.markitdown_ocr = markitdown_ocr_wrapper
 
+    def parse_batch(
+        self,
+        items: list[tuple[str | Path, str | Path]],
+        *,
+        fail_fast: bool = False,
+        file_type: str = "pdf",
+        max_file_size_mb: int = 500,
+        password: str | None = None,
+        pages: str | None = None,
+        **extra: Any,
+    ) -> list[ParsedDocument | DocumentParseError]:
+        sdk_opts: dict[str, Any] = {}
+        if pages:
+            sdk_opts["pages"] = pages
+        mineru_mode = extra.get("mineru_mode")
+        if mineru_mode is not None:
+            sdk_opts["mineru_mode"] = mineru_mode
+        mineru_results: list[ParsedDocument | DocumentParseError | None] = [None] * len(items)
+        if self.mineru is not None:
+            try:
+                raw = self.mineru.parse_batch(
+                    items,
+                    file_type=file_type,
+                    max_file_size_mb=max_file_size_mb,
+                    fail_fast=fail_fast,
+                    **sdk_opts,
+                )
+                for i, r in enumerate(raw):
+                    if i < len(mineru_results):
+                        mineru_results[i] = r
+            except DocumentParseError as e:
+                if fail_fast:
+                    raise
+                for i in range(len(items)):
+                    mineru_results[i] = e
+            except Exception as e:
+                wrapped = DocumentParseError(
+                    f"MinerU batch init error: {type(e).__name__}: {e}",
+                    original_error=e,
+                    retryable=False,
+                )
+                if fail_fast:
+                    raise wrapped from e
+                for i in range(len(items)):
+                    mineru_results[i] = wrapped
+        results: list[ParsedDocument | DocumentParseError] = []
+        for i, (file_path, output_dir) in enumerate(items):
+            path = Path(file_path).resolve()
+            out_dir = Path(output_dir).expanduser().resolve()
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    raise DocumentParseError(f"File not found: {path}")
+                _safe_file_size_check(path, max_file_size_mb)
+            except DocumentParseError as e:
+                if fail_fast:
+                    raise
+                results.append(e)
+                continue
+            except Exception as e:
+                wrapped = DocumentParseError(
+                    f"PDF prepare error[{type(e).__name__}]: {e}",
+                    original_error=e,
+                    retryable=False,
+                )
+                if fail_fast:
+                    raise wrapped from e
+                results.append(wrapped)
+                continue
+            doc_or_err = mineru_results[i] if i < len(mineru_results) else None
+            chain: list[str] = []
+            if isinstance(doc_or_err, ParsedDocument):
+                results.append(doc_or_err)
+                continue
+            if isinstance(doc_or_err, DocumentParseError):
+                cause = type(doc_or_err.original_error or doc_or_err).__name__
+                chain.append(f"mineru-open-sdk(failed {cause})")
+                log.warning("PDF L1 mineru-sdk batch failed for %s: %s", path.name, doc_or_err)
+            md = self.markitdown or MarkItDownWrapper(enable_plugins=False)
+            try:
+                doc = md.parse(path, out_dir, file_type=file_type, max_file_size_mb=max_file_size_mb)
+                if chain:
+                    doc.parser_used = " -> ".join([*chain, doc.parser_used])
+                results.append(doc)
+                continue
+            except DocumentParseError as e:
+                chain.append("markitdown(failed " + type(e.original_error or e).__name__ + ")")
+                log.warning("PDF L2 markitdown failed: %s", e)
+            md_ocr = self.markitdown_ocr
+            if md_ocr is None:
+                try:
+                    from ..utils.dependency_checker import is_markitdown_ocr_plugin_available
+                    if is_markitdown_ocr_plugin_available():
+                        md_ocr = MarkItDownWrapper(enable_plugins=True)
+                except Exception as ee:
+                    log.debug("skip markitdown-ocr auto-probe: %s", ee)
+            if md_ocr is not None:
+                try:
+                    doc = md_ocr.parse(path, out_dir, file_type=file_type, max_file_size_mb=max_file_size_mb)
+                    doc.parser_used = " -> ".join([*chain, doc.parser_used])
+                    results.append(doc)
+                    continue
+                except DocumentParseError as e:
+                    chain.append("markitdown-ocr(failed " + type(e.original_error or e).__name__ + ")")
+                    log.warning("PDF L2.5 markitdown-ocr failed: %s", e)
+            try:
+                pypdf_meta = self._pypdf_write(path, out_dir, password)
+                meta = _file_meta(path)
+                meta.update(pypdf_meta)
+                parser_used = "pypdf"
+                if chain:
+                    parser_used = " -> ".join([*chain, "pypdf"])
+                results.append(
+                    ParsedDocument(
+                        file_path=str(path),
+                        file_type=file_type,
+                        text="",
+                        pages=[],
+                        tables=[],
+                        markdown="",
+                        metadata=meta,
+                        parser_used=parser_used,
+                    )
+                )
+                continue
+            except DocumentParseError as e:
+                if fail_fast:
+                    raise
+                chain.append("pypdf(failed " + type(e.original_error or e).__name__ + ")")
+                log.warning("PDF L3 pypdf failed: %s", e)
+                results.append(
+                    DocumentParseError(
+                        f"Failed to parse PDF. Chain: {' -> '.join(chain) if chain else 'no parsers'}.",
+                        original_error=getattr(e, "original_error", None),
+                        retryable=False,
+                    )
+                )
+                continue
+            except Exception as e:
+                if fail_fast:
+                    raise DocumentParseError(
+                        f"Unexpected pypdf error[{type(e).__name__}]: {e}",
+                        original_error=e,
+                        retryable=False,
+                    ) from e
+                chain.append("pypdf(failed " + type(e).__name__ + ")")
+                log.warning("PDF L3 pypdf failed: %s", e)
+                results.append(
+                    DocumentParseError(
+                        f"Failed to parse PDF. Chain: {' -> '.join(chain) if chain else 'no parsers'}.",
+                        original_error=e,
+                        retryable=False,
+                    )
+                )
+                continue
+        return results
+
     @staticmethod
-    def _pypdf_parse(
-        path: Path, password: str | None = None
-    ) -> tuple[str, list[str], dict[str, Any]]:
+    def _pypdf_write(
+        path: Path, out_dir: Path, password: str | None = None
+    ) -> dict[str, Any]:
         from pypdf import PdfReader
         from pypdf.errors import EncryptedFileError
 
@@ -82,144 +237,31 @@ class PdfParser:
             metadata["pdf_pages"] = len(reader.pages)
         except Exception:
             pass
-        return text, pages, metadata
-
-    @staticmethod
-    def _ocr_hint(doc: ParsedDocument) -> str:
-        return (
-            "PDF produced very little text — likely a scanned document. Available fixes:\n"
-            "  1) (preferred) Use mineru-sdk with MINERU_TOKEN (from https://mineru.net/apiManage/token) + ocr=True\n"
-            "  2) (offline) Install markitdown-ocr plugin (`pip install markitdown-ocr`) and construct DocumentReader\n"
-            "     with enable_markitdown_ocr=True + llm_client=... + llm_model=... so each embedded page image is OCR'd via LLM Vision."
-        )
+        (out_dir / "full.md").write_text(text, encoding="utf-8")
+        return metadata
 
     def parse(
         self,
         file_path: str | Path,
+        output_dir: str | Path,
         file_type: str = "pdf",
         max_file_size_mb: int = 500,
         password: str | None = None,
         pages: str | None = None,
         **extra: Any,
     ) -> ParsedDocument:
-        path = Path(file_path).resolve()
-        if not path.exists():
-            raise DocumentParseError(f"File not found: {path}")
-        _safe_file_size_check(path, max_file_size_mb)
-        chain: list[str] = []
-        last_doc: ParsedDocument | None = None
-
-        # L1: mineru-open-sdk (always first when available)
-        if self.mineru is not None:
-            try:
-                sdk_opts: dict[str, Any] = {}
-                if pages:
-                    sdk_opts["pages"] = pages
-                mineru_mode = extra.get("mineru_mode")
-                if mineru_mode is not None:
-                    sdk_opts["mineru_mode"] = mineru_mode
-                doc = self.mineru.parse(
-                    path,
-                    file_type=file_type,
-                    max_file_size_mb=max_file_size_mb,
-                    **sdk_opts,
-                )
-                if len(doc.text.strip()) >= _MIN_TEXT_LEN:
-                    return doc
-                last_doc = doc
-                log.warning("PDF mineru-sdk returned short text (%d chars), will try OCR/other branches", len(doc.text.strip()))
-                chain.append(doc.parser_used)
-            except DocumentParseError as e:
-                log.warning("PDF L1 mineru-sdk failed: %s", e)
-                chain.append("mineru-open-sdk(failed " + type(e.original_error or e).__name__ + ")")
-                if not e.retryable:
-                    pass
-
-        # L2: markitdown[all] (standard plugins=False)
-        md = self.markitdown or MarkItDownWrapper(enable_plugins=False)
-        try:
-            doc = md.parse(
-                path,
-                file_type=file_type,
-                max_file_size_mb=max_file_size_mb,
-            )
-            if len(doc.text.strip()) >= _MIN_TEXT_LEN:
-                if chain:
-                    doc.parser_used = " -> ".join([*chain, doc.parser_used])
-                return doc
-            last_doc = doc
-            chain.append(doc.parser_used)
-        except DocumentParseError as e:
-            log.warning("PDF L2 markitdown failed: %s", e)
-            chain.append("markitdown(failed " + type(e.original_error or e).__name__ + ")")
-
-        # L2.5: markitdown with plugins enabled (markitdown-ocr) IF available
-        md_ocr = self.markitdown_ocr
-        if md_ocr is None:
-            # if caller wants plugins enabled, they provide pre-built wrapper; otherwise detect availability
-            try:
-                from ..utils.dependency_checker import is_markitdown_ocr_plugin_available
-                if is_markitdown_ocr_plugin_available():
-                    # Build a one-off with plugins=True IF we have a wrapper spec we can derive llm from md
-                    md_ocr = MarkItDownWrapper(enable_plugins=True)
-            except Exception as e:
-                log.debug("skip markitdown-ocr auto-probe: %s", e)
-        if md_ocr is not None:
-            try:
-                doc = md_ocr.parse(
-                    path,
-                    file_type=file_type,
-                    max_file_size_mb=max_file_size_mb,
-                )
-                if len(doc.text.strip()) >= _MIN_TEXT_LEN:
-                    doc.parser_used = " -> ".join([*chain, doc.parser_used]) if chain else doc.parser_used
-                    return doc
-                last_doc = doc
-                chain.append(doc.parser_used)
-            except DocumentParseError as e:
-                log.warning("PDF L2.5 markitdown-ocr failed: %s", e)
-                chain.append("markitdown-ocr(failed " + type(e.original_error or e).__name__ + ")")
-
-        # L3: pypdf (lightest local)
-        try:
-            pypdf_text, pypdf_pages, pypdf_meta = self._pypdf_parse(path, password)
-            meta = _file_meta(path)
-            meta.update(pypdf_meta)
-            doc = ParsedDocument(
-                file_path=str(path),
-                file_type=file_type,
-                text=pypdf_text,
-                pages=pypdf_pages,
-                tables=[],
-                markdown=pypdf_text,
-                metadata=meta,
-                parser_used="pypdf",
-            )
-            if len(pypdf_text.strip()) >= _MIN_TEXT_LEN:
-                if chain:
-                    doc.parser_used = " -> ".join([*chain, "pypdf"])
-                return doc
-            last_doc = doc
-            chain.append("pypdf")
-        except DocumentParseError:
-            raise
-        except Exception as e:
-            chain.append("pypdf(failed " + type(e).__name__ + ")")
-            log.warning("PDF L3 pypdf failed: %s", e)
-
-        # All branches produced too little text -> surface last doc + helpful error hint + chain in parser_used
-        if last_doc is not None:
-            if chain:
-                last_doc.parser_used = " -> ".join(chain)
-            hint = self._ocr_hint(last_doc)
-            if not last_doc.text.strip():
-                last_doc.text = hint
-            last_doc.metadata["scanned_pdf_hint"] = hint
-            last_doc.metadata["ocr_attempted"] = chain
-            return last_doc
-
-        chain_str = " -> ".join(chain) if chain else "no parsers"
-        raise DocumentParseError(
-            f"Failed to parse PDF via all branches. Chain: {chain_str}. {self._ocr_hint(ParsedDocument('', ''))}",
-            retryable=False,
+        results = self.parse_batch(
+            [(file_path, output_dir)],
+            file_type=file_type,
+            max_file_size_mb=max_file_size_mb,
+            password=password,
+            pages=pages,
+            fail_fast=True,
+            **extra,
         )
+        if not results:
+            raise DocumentParseError("PdfParser.parse_batch returned empty for single-file input")
+        doc = results[0]
+        if isinstance(doc, DocumentParseError):
+            raise doc
+        return doc

@@ -40,7 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
             "and prints a structured ParsedDocument to stdout."
         ),
     )
-    p.add_argument("file", help="Absolute or relative path to a local file")
+    p.add_argument(
+        "files",
+        nargs="+",
+        help="One or more local files to parse (absolute or relative paths)",
+    )
     p.add_argument(
         "--file-type-hint",
         dest="file_type_hint",
@@ -133,6 +137,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=2000,
         help="Max characters to keep for text / markdown / preview (default 2000).",
     )
+    p.add_argument(
+        "-o",
+        "--output-dir",
+        dest="output_dir",
+        default="./output",
+        help=(
+            "Directory for parsed output files. Each source file gets a "
+            "subfolder named after its basename. Default: ./output"
+        ),
+    )
     return p
 
 
@@ -153,7 +167,7 @@ def render_result(doc: ParsedDocument, fmt: str, chars: int) -> str:
         return (
             f"file_path: {doc.file_path}\n"
             f"file_type: {doc.file_type}\n"
-            f"parser_used: {doc.parser_used}\n"
+            f"method: {doc.parser_used}\n"
             f"chars: {len(doc.text or '')}\n"
             f"pages: {len(doc.pages)}\n"
             f"tables: {len(doc.tables)}\n"
@@ -209,16 +223,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    file_path = Path(args.file).expanduser().resolve()
-    if not file_path.exists():
-        payload = {
-            "ok": False,
-            "file": str(file_path),
-            "error": f"File not found: {file_path}",
-            "retryable": False,
-            "original_error_type": "FileNotFoundError",
-        }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    files: list[Path] = [Path(f).expanduser().resolve() for f in args.files]
+    early_fail = False
+    for f in files:
+        if not f.exists():
+            payload = {
+                "ok": False,
+                "file": str(f),
+                "error": f"File not found: {f}",
+                "retryable": False,
+                "original_error_type": "FileNotFoundError",
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            early_fail = True
+    if early_fail:
         return 2
 
     try:
@@ -232,25 +250,49 @@ def main(argv: list[str] | None = None) -> int:
             max_file_size_mb=args.max_file_size_mb,
         )
         extra = extra_kwargs_from_args(args)
-        doc = reader.read(
-            file_path,
+        results = reader.read_batch(
+            files,
+            args.output_dir,
+            fail_fast=False,
             file_type_hint=args.file_type_hint,
             password=args.password,
             pages=args.pages,
             **extra,
         )
     except DocumentParseError as e:
-        print(render_error(e, str(file_path)))
+        print(render_error(e, str(files[0]) if files else ""))
         return 3
     except Exception as e:  # pragma: no cover
         wrapped = DocumentParseError(
             f"Unexpected error: {e}", original_error=e, retryable=False
         )
-        print(render_error(wrapped, str(file_path)))
+        print(render_error(wrapped, str(files[0]) if files else ""))
         return 4
 
-    print(render_result(doc, args.output_format, args.chars))
-    return 0
+    output_root = Path(args.output_dir).expanduser().resolve()
+    any_error = False
+    for i, (f, res) in enumerate(zip(files, results)):
+        saved_dir = output_root / f.stem
+        if isinstance(res, DocumentParseError):
+            any_error = True
+            print(render_error(res, str(f)))
+            continue
+        try:
+            saved_dir.mkdir(parents=True, exist_ok=True)
+            (saved_dir / "result.json").write_text(
+                json.dumps(res.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            print(f"Saved to: {saved_dir}")
+        except Exception as e:  # pragma: no cover
+            any_error = True
+            wrapped = DocumentParseError(
+                f"Failed to write result for {f.name}: {type(e).__name__}: {e}",
+                original_error=e,
+                retryable=False,
+            )
+            print(render_error(wrapped, str(f)))
+    return 3 if any_error else 0
 
 
 if __name__ == "__main__":

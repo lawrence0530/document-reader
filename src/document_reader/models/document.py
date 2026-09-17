@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -17,7 +17,13 @@ class ParsedDocument:
     parser_used: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        method = (self.parser_used or "").split(" -> ")[-1]
+        return {
+            "file_path": self.file_path,
+            "file_type": self.file_type,
+            "method": method,
+            "metadata": self.metadata,
+        }
 
     def to_json(self, indent: int = 2, ensure_ascii: bool = False) -> str:
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=ensure_ascii)
@@ -32,7 +38,7 @@ class ParsedDocument:
         return (
             f"ParsedDocument(file_path={self.file_path!r}, "
             f"file_type={self.file_type!r}, "
-            f"parser_used={self.parser_used!r}, "
+            f"method={self.parser_used!r}, "
             f"text_len={len(self.text)}, "
             f"pages={len(self.pages)}, "
             f"tables={len(self.tables)}, "
