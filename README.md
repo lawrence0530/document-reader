@@ -19,7 +19,7 @@
 一条命令安装，零配置，缺啥自动补，装好后永久不用再装：
 
 ```bash
-npx add document-reader
+npx add lawrencezhu2018/document-reader
 ```
 
 
