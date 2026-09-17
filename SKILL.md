@@ -58,11 +58,12 @@ Defaults are safe - pass no flags for a normal default parse.
 | User says                                                                 | Flags to pass |
 |---------------------------------------------------------------------------|---------------|
 | "read this file"                                                          | (none) |
+| "fast parse" / "skip cloud" / "I just need the raw text quickly"         | `--fast`  (local-only; skips MinerU entirely; best for text-embedded PDFs, Office, plain text) |
 | "only PDF pages 1-20"                                                     | `--pages 1-20` |
-| "OCR this scanned PDF / recognize text in this image"                     | `--ocr`  (recommended; uses MinerU cloud OCR, free for normal use) |
+| "OCR this scanned PDF / recognize text in this image"                     | `--ocr`  (recommended; uses MinerU cloud OCR, free for normal use.  Ignored when `--fast` is on) |
 | "encrypted PDF, password is abc123"                                       | `--password abc123` |
 | "file has no extension / treat it as docx"                                | `--file-type-hint docx`  (or `pdf`, `xlsx`, `png`, `csv`, ...) |
-| "force fast MinerU mode" / "force high-quality MinerU mode"               | `--mineru-mode flash`  /  `--mineru-mode precision`  (precision requires `MINERU_TOKEN`) |
+| "force fast MinerU mode" / "force high-quality MinerU mode"               | `--mineru-mode flash`  /  `--mineru-mode precision`  (precision requires `MINERU_TOKEN`.  Ignored when `--fast` is on) |
 | "show just plain text" / "show just markdown" / "short preview"           | `--output-format text --chars 4000`  /  `--output-format markdown --chars 8000`  /  `--output-format preview --chars 2000` |
 | "this file is 1.2 GB, I know what I'm doing"                              | `--max-file-size-mb 1500` |
 | "save results to a specific folder"                                       | `-o ./custom_output`  or  `--output-dir ./custom_output` |

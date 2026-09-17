@@ -42,6 +42,7 @@ class DocumentReader:
         mineru_table: bool = True,
         mineru_timeout: float | None = None,
         mineru_base_url: str | None = None,
+        skip_mineru: bool = False,
         # --- markitdown-ocr plugin ---
         enable_markitdown_ocr: bool = False,
         llm_client: Any | None = None,
@@ -58,9 +59,10 @@ class DocumentReader:
             )
         self.max_file_size_mb = int(max_file_size_mb)
         self.enable_markitdown_ocr = bool(enable_markitdown_ocr)
+        self._skip_mineru = bool(skip_mineru)
 
         self._mineru: MinerUSdkParser | None = None
-        if is_mineru_sdk_available():
+        if not self._skip_mineru and is_mineru_sdk_available():
             try:
                 self._mineru = MinerUSdkParser(
                     token=mineru_token,
@@ -327,6 +329,7 @@ class DocumentReader:
     def capability(self) -> dict[str, Any]:
         return {
             "python_ok": python_version_ok(),
+            "fast_mode": self._skip_mineru,
             "mineru_sdk": self._mineru is not None,
             "mineru_has_token": bool(getattr(self._mineru, "token", None) is not None),
             "markitdown": self._markitdown is not None,

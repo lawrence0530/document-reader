@@ -64,10 +64,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="PDF page range: '1-20' / '3' / '1,3,5-7'",
     )
     p.add_argument(
+        "--fast",
+        action="store_true",
+        default=False,
+        help=(
+            "Fast mode: skip MinerU cloud SDK entirely and use only local parsers "
+            "(markitdown, pypdf, text_parser, pandas). Best for text-embedded "
+            "PDFs, modern Office, and text files. Significantly faster but may "
+            "return empty for scanned / image-heavy documents."
+        ),
+    )
+    p.add_argument(
         "--ocr",
         action="store_true",
         default=False,
-        help="Enable MinerU cloud OCR for scanned pages / embedded screenshots",
+        help="Enable MinerU cloud OCR for scanned pages / embedded screenshots (ignored if --fast)",
     )
     p.add_argument(
         "--mineru-mode",
@@ -248,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
             llm_client=llm_client,
             llm_model=args.llm_model,
             max_file_size_mb=args.max_file_size_mb,
+            skip_mineru=bool(args.fast),
         )
         extra = extra_kwargs_from_args(args)
         results = reader.read_batch(
