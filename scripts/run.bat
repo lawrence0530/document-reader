@@ -30,7 +30,27 @@ if "%UV_EXE%"=="" (
 )
 
 REM --- 2. Ensure Python 3.12 and deps are installed ---
+REM     Put the .venv outside the (potentially read-only / sandboxed) skill install directory.
+REM     Fallback order (first writable wins):
+REM       1. %DOCUMENT_READER_VENV_ROOT%  (user override, if set)
+REM       2. %LOCALAPPDATA%\document-reader
+REM       3. %USERPROFILE%\.cache\document-reader
+REM       4. %TEMP%\document-reader
+REM       5. parent of SKILL_DIR: <skills_parent>\.document-reader-cache
+set "CACHE_ROOT="
+if defined DOCUMENT_READER_VENV_ROOT if not "%DOCUMENT_READER_VENV_ROOT%"=="" set "CACHE_ROOT=%DOCUMENT_READER_VENV_ROOT%"
+if "%CACHE_ROOT%"=="" if defined LOCALAPPDATA if exist "%LOCALAPPDATA%\" set "CACHE_ROOT=%LOCALAPPDATA%\document-reader"
+if "%CACHE_ROOT%"=="" if defined USERPROFILE set "CACHE_ROOT=%USERPROFILE%\.cache\document-reader"
+if "%CACHE_ROOT%"=="" if defined TEMP set "CACHE_ROOT=%TEMP%\document-reader"
+if "%CACHE_ROOT%"=="" (
+    for %%I in ("%SKILL_DIR%\..") do set "PARENT=%%~fI"
+    if defined PARENT set "CACHE_ROOT=%PARENT%\.document-reader-cache"
+)
+set "UV_PROJECT_ENVIRONMENT=%CACHE_ROOT%\venv"
+if not exist "%CACHE_ROOT%" mkdir "%CACHE_ROOT%" 2>nul
+
 echo [run] Ensuring Python 3.12 + dependencies installed...
+echo [run] Using virtualenv: %UV_PROJECT_ENVIRONMENT%
 "%UV_EXE%" sync --all-extras
 if %ERRORLEVEL% neq 0 (
     echo [run] FAILED: uv sync exited with code %ERRORLEVEL%.

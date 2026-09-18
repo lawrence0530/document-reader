@@ -87,7 +87,30 @@ if [ -z "$UV_EXE" ]; then
 fi
 
 # -------- 3. Ensure Python 3.12 + deps installed --------
+#     Put the .venv outside the (potentially read-only / sandboxed) skill install directory.
+#     Fallback order (first writable wins):
+#       1. ${DOCUMENT_READER_VENV_ROOT}  (user override, if set)
+#       2. ${XDG_CACHE_HOME}/document-reader
+#       3. ${HOME}/.cache/document-reader
+#       4. ${TMPDIR:-/tmp}/document-reader
+#       5. parent of SKILL_DIR: <skills_parent>/.document-reader-cache
+if [ -n "${DOCUMENT_READER_VENV_ROOT:-}" ]; then
+    CACHE_ROOT="${DOCUMENT_READER_VENV_ROOT}"
+elif [ -n "${XDG_CACHE_HOME:-}" ] && [ -d "$XDG_CACHE_HOME" ]; then
+    CACHE_ROOT="${XDG_CACHE_HOME}/document-reader"
+elif [ -n "${HOME:-}" ]; then
+    CACHE_ROOT="${HOME}/.cache/document-reader"
+elif [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+    CACHE_ROOT="${TMPDIR}/document-reader"
+else
+    PARENT="$(cd "$SKILL_DIR/.." && pwd)"
+    CACHE_ROOT="${PARENT}/.document-reader-cache"
+fi
+export UV_PROJECT_ENVIRONMENT="${CACHE_ROOT}/venv"
+mkdir -p "${CACHE_ROOT}" 2>/dev/null || true
+
 echo "[run] Ensuring Python 3.12 + dependencies installed..."
+echo "[run] Using virtualenv: ${UV_PROJECT_ENVIRONMENT}"
 "$UV_EXE" sync --all-extras
 
 # -------- 4. Real work: forward all arguments to main (module mode, avoids script-directory sys.path trap) --------
